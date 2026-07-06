@@ -1,0 +1,1 @@
+# Toda regra de negócio deve existir em apenas um lugar.
