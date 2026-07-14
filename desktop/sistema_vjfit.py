@@ -107,6 +107,29 @@ def garantir_pastas():
     os.makedirs(PASTA_BACKUP, exist_ok=True)
 
 
+def _reparar_codigos_convertidos_em_data(ws, colunas):
+    """
+    Corrige células que o Excel converteu erroneamente de código
+    (ex: '1-3') para data (ex: 03/01/2026), reconstruindo o texto
+    original a partir do mês/dia armazenado, e força a formatação
+    de Texto na célula para evitar que o problema se repita.
+    Retorna a quantidade de células corrigidas.
+    """
+    corrigidos = 0
+    for row in range(2, ws.max_row + 1):
+        for col in colunas:
+            cell = ws.cell(row, col)
+            val = cell.value
+            if isinstance(val, datetime):
+                cell.value = f"{val.month}-{val.day}"
+                cell.number_format = "@"
+                corrigidos += 1
+            elif isinstance(val, str) and val.strip():
+                # já é texto, mas garante formatação de texto na célula
+                cell.number_format = "@"
+    return corrigidos
+
+
 class ItemCarrinho:
     def __init__(self, cod, produto, cor, tam, qtd, valor):
         self.cod = cod
@@ -190,6 +213,7 @@ def migrar_se_necessario():
     try:
         wb = openpyxl.load_workbook(ARQUIVO_EXCEL)
         alterou = False
+        codigos_corrigidos = 0
 
         # ── ESTOQUE ──────────────────────────────────────
         if "ESTOQUE" in wb.sheetnames:
@@ -223,6 +247,9 @@ def migrar_se_necessario():
                 _estilizar_cab_oxl(ws, 1, len(CAB_ESTOQUE), "1B5E20")
                 alterou = True
 
+            # Corrige códigos que o Excel converteu para data (col A e B)
+            codigos_corrigidos += _reparar_codigos_convertidos_em_data(ws, [1, 2])
+
         # ── VENDAS ───────────────────────────────────────
         if "VENDAS" in wb.sheetnames:
             ws = wb["VENDAS"]
@@ -239,15 +266,26 @@ def migrar_se_necessario():
                 _estilizar_cab_oxl(ws, 1, len(CAB_VENDAS), "365F92")
                 alterou = True
 
-        if alterou:
+            # Corrige códigos de produto (col B) convertidos para data
+            codigos_corrigidos += _reparar_codigos_convertidos_em_data(ws, [2])
+
+        if alterou or codigos_corrigidos > 0:
             wb.save(ARQUIVO_EXCEL)
             wb.close()
-            messagebox.showinfo(
-                "✅ Planilha Atualizada",
-                "Seu backup foi migrado automaticamente para a versão nova (v6).\n\n"
-                "As colunas COR e TAMANHO foram adicionadas.\n"
-                "Use 'Atualizar Estoque' para preencher cor/tamanho dos produtos existentes."
-            )
+            partes = []
+            if alterou:
+                partes.append(
+                    "Seu backup foi migrado automaticamente para a versão nova (v6).\n"
+                    "As colunas COR e TAMANHO foram adicionadas.\n"
+                    "Use 'Atualizar Estoque' para preencher cor/tamanho dos produtos existentes."
+                )
+            if codigos_corrigidos > 0:
+                partes.append(
+                    f"⚠ {codigos_corrigidos} código(s) que o Excel havia convertido "
+                    f"erroneamente para data foram corrigidos automaticamente.\n"
+                    f"O sistema agora protege essas células para não acontecer de novo."
+                )
+            messagebox.showinfo("✅ Planilha Atualizada", "\n\n".join(partes))
         else:
             wb.close()
     except Exception as e:
@@ -333,6 +371,7 @@ def criar_planilha_se_necessario():
     ws_v.append(CAB_VENDAS)
     _estilizar_cab_oxl(ws_v, 1, len(CAB_VENDAS), "365F92")
     ws_v.row_dimensions[1].height = 22
+    ws_v.column_dimensions['B'].number_format = "@"
     _criar_tabela_oxl(ws_v, "TabelaVendas", f"A1:{get_column_letter(len(CAB_VENDAS))}2", "TableStyleMedium9")
     _resumo_mensal_oxl(ws_v)
     _ajustar_colunas(ws_v, {"A":6,"B":12,"C":22,"D":26,"E":12,"F":10,
@@ -342,6 +381,10 @@ def criar_planilha_se_necessario():
     ws_e.append(CAB_ESTOQUE)
     _estilizar_cab_oxl(ws_e, 1, len(CAB_ESTOQUE), "1B5E20")
     ws_e.row_dimensions[1].height = 22
+    # Colunas de código como Texto — evita que o Excel converta
+    # códigos tipo '1-3' automaticamente para data.
+    ws_e.column_dimensions['A'].number_format = "@"
+    ws_e.column_dimensions['B'].number_format = "@"
     _criar_tabela_oxl(ws_e, "TabelaEstoque", f"A1:{get_column_letter(len(CAB_ESTOQUE))}2", "TableStyleMedium2")
     _ajustar_colunas(ws_e, {"A":12,"B":10,"C":28,"D":16,"E":12,"F":10,
                              "G":10,"H":14,"I":14,"J":38,"K":20})
@@ -554,6 +597,7 @@ class JanelaEstoque:
         self.win.configure(bg='#f1f8f1')
         self.win.grab_set()
         self.foto_path_selecionada = None
+        self.foto_path_editar_nova = None
         self._produto_editar = None
 
         fh = tk.Frame(self.win, bg="#1b5e20", height=55)
@@ -721,6 +765,10 @@ class JanelaEstoque:
             wb, fechar = xw_abrir()
             ws = wb.sheets["ESTOQUE"]
             ul = xw_ultima_linha(ws) + 1
+            # Força formato Texto ANTES de escrever, para o Excel não
+            # converter códigos tipo '1-3' automaticamente para data.
+            ws.range(f"A{ul}").number_format = "@"
+            ws.range(f"B{ul}").number_format = "@"
             ws.range(f"A{ul}").value = [
                 cod_norm, pai_norm, nome, cat, cor, tam, qtd,
                 custo, venda, foto_dest, datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -751,7 +799,7 @@ class JanelaEstoque:
         frame = tk.Frame(self.nb, bg='#f1f8f1')
         self.nb.add(frame, text="  ✏️ Editar Produto  ")
 
-        tk.Label(frame, text="Buscar pelo Código (variante ou pai):",
+        tk.Label(frame, text="Buscar pelo Código Pai:",
                  font=("Arial",11,"bold"), bg='#f1f8f1').pack(pady=(18,4))
 
         fb = tk.Frame(frame, bg='#f1f8f1'); fb.pack()
@@ -804,6 +852,23 @@ class JanelaEstoque:
         self.ed_qtd_set = tk.Entry(fq2, width=6, font=("Arial",11), bd=2, relief="groove")
         self.ed_qtd_set.pack(side="left", padx=4, ipady=2)
 
+        # ── Foto do produto ─────────────────────────────
+        sep2 = tk.Frame(frame, bg="#ddd", height=1); sep2.pack(fill="x", padx=25, pady=(14,6))
+        foto_box = tk.Frame(frame, bg='#f1f8f1'); foto_box.pack(pady=(0,4))
+        tk.Label(foto_box, text="📷 Foto do Produto", font=("Arial",10,"bold"),
+                  bg='#f1f8f1').pack()
+        self.foto_prev_ed = tk.Label(foto_box, text="Sem foto", bg="#e8f5e9",
+                                      width=20, height=8, relief="groove",
+                                      font=("Arial",9), fg="#555")
+        self.foto_prev_ed.pack(pady=6)
+        fb_foto = tk.Frame(foto_box, bg='#f1f8f1'); fb_foto.pack()
+        tk.Button(fb_foto, text="📂  Alterar Foto", command=self.selecionar_foto_editar,
+                  bg="#1565c0", fg="white", font=("Arial",9,"bold"),
+                  padx=10, pady=6, cursor="hand2", bd=0).pack(side="left", padx=4)
+        tk.Button(fb_foto, text="🗑  Remover Foto", command=self.remover_foto_editar,
+                  bg="#b71c1c", fg="white", font=("Arial",9),
+                  padx=10, pady=6, cursor="hand2", bd=0).pack(side="left", padx=4)
+
         # Botões de ação
         fb2 = tk.Frame(frame, bg='#f1f8f1'); fb2.pack(pady=14)
         tk.Button(fb2, text="💾  SALVAR ALTERAÇÕES", command=self.salvar_edicao,
@@ -813,24 +878,35 @@ class JanelaEstoque:
                   bg="#c62828", fg="white", font=("Arial",12,"bold"),
                   padx=22, pady=9, cursor="hand2", bd=0).pack(side="left", padx=8)
 
+    def selecionar_foto_editar(self):
+        path = filedialog.askopenfilename(
+            title="Selecionar foto",
+            filetypes=[("Imagens","*.jpg *.jpeg *.png *.webp *.bmp"),("Todos","*.*")])
+        if path:
+            self.foto_path_editar_nova = path
+            self._preview(path, self.foto_prev_ed, size=(140,140))
+
+    def remover_foto_editar(self):
+        self.foto_path_editar_nova = ""  # sentinela: remover foto ao salvar
+        self.foto_prev_ed.config(image='', text="Foto será removida\nao salvar", width=20, height=8)
+        self.foto_prev_ed.image = None
+
     def buscar_editar(self):
         cod = self.entry_busca_ed.get().strip()
         if not cod: messagebox.showerror("Erro","Digite um código."); return
         cod_norm = normalizar_cod(cod)
 
-        # Tenta variante exata
-        p = buscar_produto_por_codigo(cod_norm)
-        if not p:
-            # Tenta como código pai
-            variantes = buscar_variantes_por_pai(cod_norm)
-            if not variantes:
-                self.lbl_info_ed.config(text=f"Código '{cod_norm}' não encontrado.", fg="#c62828")
-                self._produto_editar = None; return
-            if len(variantes) == 1:
-                p = variantes[0]
-            else:
-                popup_selecionar_variante(variantes, self.win, self._preencher_edicao)
-                return
+        # Busca SEMPRE pelo Código Pai — evita digitar código de variante
+        # diretamente, o que causava conflitos em numerações altas.
+        variantes = buscar_variantes_por_pai(cod_norm)
+        if not variantes:
+            self.lbl_info_ed.config(text=f"Código Pai '{cod_norm}' não encontrado.", fg="#c62828")
+            self._produto_editar = None; return
+        if len(variantes) == 1:
+            p = variantes[0]
+        else:
+            popup_selecionar_variante(variantes, self.win, self._preencher_edicao)
+            return
         self._preencher_edicao(p)
 
     def _preencher_edicao(self, p):
@@ -849,6 +925,13 @@ class JanelaEstoque:
             e.delete(0, tk.END); e.insert(0, val)
         self.ed_qtd_add.delete(0, tk.END)
         self.ed_qtd_set.delete(0, tk.END)
+
+        self.foto_path_editar_nova = None
+        if p['foto'] and os.path.exists(p['foto']):
+            self._preview(p['foto'], self.foto_prev_ed, size=(140,140))
+        else:
+            self.foto_prev_ed.config(image='', text="Sem foto", width=20, height=8)
+            self.foto_prev_ed.image = None
 
     def salvar_edicao(self):
         if not self._produto_editar:
@@ -883,6 +966,8 @@ class JanelaEstoque:
             if linha is None:
                 messagebox.showerror("Erro","Produto não encontrado na planilha."); xw_salvar_fechar(wb, fechar); return
 
+            ws.range(f"A{linha}").number_format = "@"
+            ws.range(f"B{linha}").number_format = "@"
             ws.range(f"B{linha}").value = novo_pai
             ws.range(f"C{linha}").value = novo_nome
             ws.range(f"D{linha}").value = novo_cat
@@ -907,12 +992,36 @@ class JanelaEstoque:
                 except: messagebox.showerror("Erro","Qtd inválida."); xw_salvar_fechar(wb,fechar); return
 
             ws.range(f"K{linha}").value = datetime.now().strftime("%d/%m/%Y %H:%M")
+
+            # ── Foto (compartilhada entre variantes do mesmo pai) ──
+            foto_dest = None  # None = sem alteração
+            if self.foto_path_editar_nova == "":
+                foto_dest = ""  # marcado para remover
+            elif self.foto_path_editar_nova:
+                garantir_pastas()
+                ext = os.path.splitext(self.foto_path_editar_nova)[1]
+                foto_dest = os.path.join(PASTA_FOTOS, f"{novo_pai}{ext}")
+                shutil.copy2(self.foto_path_editar_nova, foto_dest)
+
+            if foto_dest is not None:
+                ws.range(f"J{linha}").value = foto_dest
+                # propaga a mesma foto para as demais variantes do mesmo pai
+                ultima = xw_ultima_linha(ws)
+                for i in range(2, ultima + 1):
+                    if i == linha: continue
+                    pai_val = ws.range(f"B{i}").value
+                    if pai_val is not None and normalizar_cod(pai_val) == novo_pai:
+                        ws.range(f"J{i}").value = foto_dest
+
             xw_salvar_fechar(wb, fechar)
 
             messagebox.showinfo("✅ Salvo!", f"'{novo_nome}' — {nova_cor} {novo_tam}\nAlterações salvas!")
             self.lbl_info_ed.config(text="Nenhum produto buscado ainda.", fg="#777")
             self.lbl_qtd_atual.config(text="—")
             self._produto_editar = None
+            self.foto_path_editar_nova = None
+            self.foto_prev_ed.config(image='', text="Sem foto", width=20, height=8)
+            self.foto_prev_ed.image = None
             self.entry_busca_ed.delete(0, tk.END)
             self.atualizar_listagem()
         except Exception as e:
@@ -1232,7 +1341,8 @@ def on_cod_change(event=None):
     if not cod: lbl_info.config(text="", fg="#555"); return
     cod_norm = normalizar_cod(cod)
 
-    # VERIFICA PAI PRIMEIRO — garante popup mesmo quando COD == COD_PAI
+    # Busca SEMPRE pelo Código Pai — evita digitar código de variante
+    # diretamente, o que causava conflitos em numerações altas.
     variantes = buscar_variantes_por_pai(cod_norm)
 
     if len(variantes) > 1:
@@ -1247,14 +1357,9 @@ def on_cod_change(event=None):
         _preencher_venda_com(variantes[0])
 
     else:
-        # Sem filhos → tenta código de variante exato
-        p = buscar_produto_por_codigo(cod_norm)
-        if p:
-            _preencher_venda_com(p)
-        else:
-            lbl_info.config(
-                text=f"\u26a0  Código '{cod_norm}' não encontrado no estoque",
-                fg="#c62828")
+        lbl_info.config(
+            text=f"\u26a0  Código Pai '{cod_norm}' não encontrado no estoque",
+            fg="#c62828")
 
 def salvar_pedido():
     if carrinho.vazio():
@@ -1287,6 +1392,9 @@ def salvar_pedido():
         id_venda = ul - 1
 
         for item in carrinho.itens:
+            # Força formato Texto na coluna do código para o Excel
+            # não converter '1-3' automaticamente para data.
+            ws.range(f"B{ul}").number_format = "@"
             ws.range(f"A{ul}").value = [
                 id_venda,
                 item.cod,
@@ -1430,10 +1538,14 @@ for txt, cmd, cor in [("📦  ESTOQUE",  abrir_estoque,    "#e67e22"),
 # Corpo
 fc = tk.Frame(root, bg='#f0f0f0'); fc.pack(fill="both", padx=30, pady=8)
 
-tk.Label(fc, text="Código do Produto (variante ou pai):", font=("Arial",10), bg='#f0f0f0').pack(anchor="w")
-entry_cod = tk.Entry(fc, width=22, font=("Arial",11), bd=2, relief="groove")
-entry_cod.pack(anchor="w", ipady=3)
-entry_cod.bind("<KeyRelease>", on_cod_change)
+tk.Label(fc, text="Código do Produto (Código Pai):", font=("Arial",10), bg='#f0f0f0').pack(anchor="w")
+fc_busca = tk.Frame(fc, bg='#f0f0f0'); fc_busca.pack(anchor="w")
+entry_cod = tk.Entry(fc_busca, width=22, font=("Arial",11), bd=2, relief="groove")
+entry_cod.pack(side="left", ipady=3)
+entry_cod.bind("<Return>", on_cod_change)
+tk.Button(fc_busca, text="🔍", command=on_cod_change,
+          bg="#1565c0", fg="white", font=("Arial",11,"bold"),
+          padx=10, pady=3, cursor="hand2", bd=0).pack(side="left", padx=(6,0))
 
 lbl_info = tk.Label(fc, text="", font=("Arial",9,"italic"), bg='#f0f0f0', fg="#555")
 # ───────────── CARRINHO UI ─────────────
@@ -1525,7 +1637,7 @@ tk.Button(fc, text="💾 Finalizar Venda",
           font=("Arial",12,"bold")).pack(fill="x", pady=5)
 
 tk.Label(root,
-         text="💡 Digite o código pai para escolher cor/tamanho  |  O sistema salva direto no Excel",
+         text="💡 Digite o Código Pai e aperte ENTER (ou clique na 🔍) para escolher cor/tamanho  |  O sistema salva direto no Excel",
          font=("Arial",8,"italic"), bg='#f0f0f0', fg="#2e7d32").pack(pady=(0,8))
 
 # Inicializa
