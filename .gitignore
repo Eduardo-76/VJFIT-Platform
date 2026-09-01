@@ -30,3 +30,9 @@ fotos_produtos/
 Thumbs.db
 Desktop.ini
 .DS_Store
+
+# ==========================
+# Variáveis de ambiente
+# ==========================
+.env
+*.env
