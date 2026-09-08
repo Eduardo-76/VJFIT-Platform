@@ -1,6 +1,15 @@
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, String, Text, func
+from sqlalchemy import (
+    Boolean,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    func,
+)
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -8,6 +17,14 @@ from app.database import Base
 
 class Produto(Base):
     __tablename__ = "produto"
+
+    __table_args__ = (
+        UniqueConstraint(
+            "categoria_id",
+            "nome",
+            name="produto_categoria_nome_unique",
+        ),
+    )
 
     id: Mapped[int] = mapped_column(
         Integer,
@@ -20,7 +37,7 @@ class Produto(Base):
     )
 
     nome: Mapped[str] = mapped_column(
-        String(150),
+        String(100),
         nullable=False
     )
 

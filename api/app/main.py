@@ -8,6 +8,7 @@ from app.models.categoria import Categoria
 from app.models.produto import Produto
 
 from app.routers.categoria import router as categoria_router
+from app.routers.produto import router as produto_router
 
 
 app = FastAPI(
@@ -18,6 +19,7 @@ app = FastAPI(
 Base.metadata.create_all(bind=engine)
 
 app.include_router(categoria_router)
+app.include_router(produto_router)
 
 
 @app.get("/")
